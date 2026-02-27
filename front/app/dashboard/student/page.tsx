@@ -34,17 +34,14 @@ const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/a
 
 // API Service Functions
 const apiService = {
-  // Get auth token from localStorage
   getAuthToken: () => {
     const token = localStorage.getItem('authToken')
-    console.log(token)
     if (typeof window !== 'undefined') {
       return token
     }
     return null
   },
 
-  // Create headers with auth token
   getAuthHeaders: () => {
     const token = apiService.getAuthToken()
     return {
@@ -53,8 +50,6 @@ const apiService = {
     }
   },
 
-  
-  // Fetch approved events
   getApprovedEvents: async () => {
     const response = await fetch(`${API_BASE_URL}/events`, {
       headers: apiService.getAuthHeaders()
@@ -63,7 +58,6 @@ const apiService = {
     return response.json()
   },
 
-  // Get user's registered events
   getRegisteredEvents: async () => {
     const response = await fetch(`${API_BASE_URL}/events/registered`, {
       headers: apiService.getAuthHeaders()
@@ -72,7 +66,6 @@ const apiService = {
     return response.json()
   },
 
-  // Enroll in an event
   enrollInEvent: async (eventId) => {
     const response = await fetch(`${API_BASE_URL}/events/${eventId}/enroll`, {
       method: 'POST',
@@ -82,7 +75,6 @@ const apiService = {
     return response.json()
   },
 
-  // Check enrollment status
   checkEnrollmentStatus: async (eventId) => {
     const response = await fetch(`${API_BASE_URL}/events/${eventId}/enrollment-status`, {
       headers: apiService.getAuthHeaders()
@@ -91,7 +83,6 @@ const apiService = {
     return response.json()
   },
 
-  // Get AI chat response
   aiChat: async (message) => {
     const response = await fetch(`${API_BASE_URL}/ai/chat`, {
       method: 'POST',
@@ -102,34 +93,12 @@ const apiService = {
     return response.json()
   },
 
-  // Get AI recommendations
-  getAIRecommendations: async () => {
-    const response = await fetch(`${API_BASE_URL}/ai/recommendations`, {
-      headers: apiService.getAuthHeaders()
-    })
-    if (!response.ok) throw new Error('Failed to get AI recommendations')
-    return response.json()
-  },
-
-  // Get upcoming events
-  getUpcomingEvents: async () => {
-    const response = await fetch(`${API_BASE_URL}/events/upcoming`, {
-      headers: apiService.getAuthHeaders()
-    })
-    if (!response.ok) throw new Error('Failed to fetch upcoming events')
-    return response.json()
-  },
-
-  // Get current user info
   getCurrentUser: async () => {
-    console.log("Requesting user = ")
     const response = await fetch(`${API_BASE_URL}/auth/me`, {
       headers: apiService.getAuthHeaders()
     })
     if (!response.ok) throw new Error('Failed to get user info')
-    const data = response.json()
-    console.log(data)
-    return data
+    return response.json()
   }
 }
 
@@ -137,10 +106,11 @@ export default function StudentDashboard() {
   // State Management
   const [searchQuery, setSearchQuery] = useState("")
   const [viewMode, setViewMode] = useState("grid")
+  const [allEvents, setAllEvents] = useState([]) // Master list to match AI titles against
   const [events, setEvents] = useState([])
   const [registeredEvents, setRegisteredEvents] = useState([])
   const [bookmarkedEvents, setBookmarkedEvents] = useState([])
-  const [aiRecommendations, setAiRecommendations] = useState([])
+  const [aiResponseData, setAiResponseData] = useState(null) // Stores { description: string, events: array }
   const [user, setUser] = useState(null)
   const [loading, setLoading] = useState(true)
   const [aiLoading, setAiLoading] = useState(false)
@@ -158,7 +128,6 @@ export default function StudentDashboard() {
       setLoading(true)
       setError(null)
 
-      // Check if user is authenticated
       const token = apiService.getAuthToken()
       if (!token) {
         setError('Please log in to access the dashboard')
@@ -166,19 +135,17 @@ export default function StudentDashboard() {
         return
       }
 
-      // Load user info and events in parallel
       const [userResponse, eventsResponse, registeredResponse] = await Promise.all([
         apiService.getCurrentUser(),
         apiService.getApprovedEvents(),
         apiService.getRegisteredEvents()
       ])
-      console.log(userResponse)
-      console.log(userResponse.user)
+
       setUser(userResponse.user)
+      setAllEvents(eventsResponse.events || [])
       setEvents(eventsResponse.events || [])
       setRegisteredEvents(registeredResponse.events || [])
 
-      // Load enrollment statuses for all events
       const statusPromises = eventsResponse.events.map(async (event) => {
         try {
           const status = await apiService.checkEnrollmentStatus(event.id)
@@ -195,15 +162,6 @@ export default function StudentDashboard() {
       }, {})
       setEnrollmentStatuses(statusMap)
 
-      // Load AI recommendations
-      try {
-        const recommendations = await apiService.getAIRecommendations()
-        setAiRecommendations(recommendations.recommendations || [])
-        console.log(aiRecommendations)
-      } catch (err) {
-        console.warn('Failed to load AI recommendations:', err)
-      }
-
     } catch (err) {
       setError(err.message || 'Failed to load dashboard data')
     } finally {
@@ -216,13 +174,11 @@ export default function StudentDashboard() {
       setError(null)
       await apiService.enrollInEvent(eventId)
       
-      // Update enrollment status
       setEnrollmentStatuses(prev => ({
         ...prev,
         [eventId]: true
       }))
       
-      // Reload registered events
       const registeredResponse = await apiService.getRegisteredEvents()
       setRegisteredEvents(registeredResponse.events || [])
       
@@ -234,13 +190,12 @@ export default function StudentDashboard() {
   }
 
   const handleBookmark = (eventId) => {
-    // Since bookmarking isn't implemented in the backend, we'll handle it locally
     setBookmarkedEvents(prev => {
       const isBookmarked = prev.some(e => e.id === eventId)
       if (isBookmarked) {
         return prev.filter(e => e.id !== eventId)
       } else {
-        const event = events.find(e => e.id === eventId)
+        const event = allEvents.find(e => e.id === eventId)
         return event ? [...prev, event] : prev
       }
     })
@@ -252,17 +207,25 @@ export default function StudentDashboard() {
     try {
       setAiLoading(true)
       setError(null)
+      setAiResponseData(null) // Clear previous results
       
-      const response = await apiService.aiChat(searchQuery)
+      const result = await apiService.aiChat(searchQuery)
       
-      if (response.relevantEvents && response.relevantEvents.length > 0) {
-        setEvents(response.relevantEvents)
-        setSuccessMessage(`Found ${response.relevantEvents.length} relevant events!`)
-        setAiRecommendations(response.response)
-        setTimeout(() => setSuccessMessage(''), 3000)
+      if (result.success && result.response) {
+        const { description, events: eventTitles } = result.response
+        
+        // Match the titles returned by AI to our actual full event objects
+        const matchedEvents = eventTitles && eventTitles.length > 0 
+          ? allEvents.filter(e => eventTitles.includes(e.title))
+          : []
+
+        setAiResponseData({
+          description: description,
+          events: matchedEvents
+        })
+
       } else {
-        setSuccessMessage('No specific events found, but here\'s what I found: ' + response.response)
-        setTimeout(() => setSuccessMessage(''), 5000)
+        setError("Failed to parse AI response.")
       }
     } catch (err) {
       setError(err.message || 'Failed to get AI response')
@@ -279,90 +242,20 @@ export default function StudentDashboard() {
   // Animation variants
   const containerVariants = {
     hidden: { opacity: 0 },
-    visible: {
-      opacity: 1,
-      transition: {
-        duration: 0.6,
-        staggerChildren: 0.1,
-      },
-    },
+    visible: { opacity: 1, transition: { duration: 0.6, staggerChildren: 0.1 } },
   }
 
   const itemVariants = {
     hidden: { opacity: 0, y: 20 },
-    visible: {
-      opacity: 1,
-      y: 0,
-      transition: { duration: 0.5 },
-    },
+    visible: { opacity: 1, y: 0, transition: { duration: 0.5 } },
   }
 
   const cardVariants = {
     hidden: { opacity: 0, y: 30 },
-    visible: {
-      opacity: 1,
-      y: 0,
-      transition: { duration: 0.5 },
-    },
-    hover: {
-      y: -8,
-      scale: 1.02,
-      transition: { duration: 0.3, ease: "easeOut" },
-    },
+    visible: { opacity: 1, y: 0, transition: { duration: 0.5 } },
+    hover: { y: -8, scale: 1.02, transition: { duration: 0.3, ease: "easeOut" } },
   }
 
-  const parseReviewContent = (review) => {
-  const parsedContent = [];
-
-  const headingRegex = /(?<!\*)\*\*(.+?)\*\*/g; 
-  const subheadingRegex = /\*\s*\*\*(.+?)\*\*/g; 
-  const lines = review.split("\n");
-
-  lines.forEach((line) => {
-    let trimmedLine = line.trim();
-
-    let subheadingMatch;
-    while ((subheadingMatch = subheadingRegex.exec(trimmedLine)) !== null) {
-      parsedContent.push(
-        <h3 className="font-semibold text-lg text-gray-800 mb-2" key={parsedContent.length}>
-          {subheadingMatch[1].trim()}
-        </h3>
-      );
-
-      trimmedLine = trimmedLine.replace(subheadingMatch[0], "");
-    }
-
-    let match;
-    let lastIndex = 0;
-    while ((match = headingRegex.exec(trimmedLine)) !== null) {
-      if (match.index > lastIndex) {
-        parsedContent.push(
-          <p className="text-gray-700 mb-2" key={parsedContent.length}>
-            {trimmedLine.slice(lastIndex, match.index).trim()}
-          </p>
-        );
-      }
-
-      parsedContent.push(
-        <h2 className="font-bold text-xl text-gray-900 mb-2" key={parsedContent.length}>
-          {match[1].trim()}
-        </h2>
-      );
-
-      lastIndex = headingRegex.lastIndex;
-    }
-
-    if (lastIndex < trimmedLine.length) {
-      parsedContent.push(
-        <p className="text-gray-700 mb-2" key={parsedContent.length}>
-          {trimmedLine.slice(lastIndex).trim()}
-        </p>
-      );
-    }
-  });
-
-  return <div>{parsedContent}</div>;
-};
   const getEventCardStyle = (type) => {
     if (type === "academic") {
       return {
@@ -387,10 +280,93 @@ export default function StudentDashboard() {
 
   const formatDate = (dateString) => {
     return new Date(dateString).toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric'
+      year: 'numeric', month: 'short', day: 'numeric'
     })
+  }
+
+  // Extracted Reusable Event Card Component
+  const renderEventCard = (event, index) => {
+    const cardStyle = getEventCardStyle(event.type)
+    const isEnrolled = enrollmentStatuses[event.id] || false
+    const isBookmarked = bookmarkedEvents.some(e => e.id === event.id)
+    
+    return (
+      <motion.div key={event.id || index} variants={cardVariants} whileHover="hover" custom={index}>
+        <Card className={`${cardStyle.gradient} ${cardStyle.border} ${cardStyle.shadow} ${cardStyle.hoverShadow} hover:shadow-xl transition-all duration-300 border-2 cursor-pointer group`}>
+          <CardHeader className="relative">
+            <div className="flex justify-between items-start">
+              <CardTitle className="text-lg text-gray-900 group-hover:text-gray-800 transition-colors">
+                {event.title}
+              </CardTitle>
+              <motion.div
+                whileHover={{ scale: 1.1 }}
+                className={`px-3 py-1 rounded-full text-white text-xs font-medium ${cardStyle.badgeGradient} shadow-lg`}
+              >
+                {event.type}
+              </motion.div>
+            </div>
+            <CardDescription className="text-gray-600">{event.description}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3 text-sm text-gray-700 mb-4">
+              <motion.div className="flex items-center" whileHover={{ x: 5 }} transition={{ duration: 0.2 }}>
+                <div className="p-1 bg-white/60 rounded-md mr-3">
+                  <Clock className="h-4 w-4 text-gray-600" />
+                </div>
+                <span className="font-medium">
+                  {formatDate(event.date)} at {event.time}
+                </span>
+              </motion.div>
+              <motion.div className="flex items-center" whileHover={{ x: 5 }} transition={{ duration: 0.2 }}>
+                <div className="p-1 bg-white/60 rounded-md mr-3">
+                  <MapPin className="h-4 w-4 text-gray-600" />
+                </div>
+                <span className="font-medium">{event.venue}</span>
+              </motion.div>
+            </div>
+            {event.tags && (
+              <div className="flex flex-wrap gap-2 mb-4">
+                {String(event.tags).split(',').map((tag, idx) => (
+                  <motion.div
+                    key={idx}
+                    whileHover={{ scale: 1.05 }}
+                    className="px-2 py-1 bg-white/70 text-gray-700 text-xs rounded-full border border-gray-200 font-medium"
+                  >
+                    {tag.trim()}
+                  </motion.div>
+                ))}
+              </div>
+            )}
+            <div className="flex space-x-2">
+              <motion.div className="flex-1" whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
+                <Button
+                  onClick={() => handleRegister(event.id)}
+                  disabled={isEnrolled}
+                  className={`w-full ${
+                    isEnrolled ? "bg-gradient-to-r from-gray-400 to-gray-500" : cardStyle.buttonGradient
+                  } text-white font-medium transition-all duration-300`}
+                >
+                  {isEnrolled ? "Registered" : "Register"}
+                  {!isEnrolled && <ArrowRight className="ml-2 h-4 w-4" />}
+                </Button>
+              </motion.div>
+              <motion.div whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }}>
+                <Button
+                  onClick={() => handleBookmark(event.id)}
+                  variant="outline"
+                  size="sm"
+                  className="border-gray-300 hover:bg-yellow-50 hover:border-yellow-300"
+                >
+                  <Bookmark
+                    className={`h-4 w-4 ${isBookmarked ? "fill-yellow-400 text-yellow-400" : "text-gray-400"}`}
+                  />
+                </Button>
+              </motion.div>
+            </div>
+          </CardContent>
+        </Card>
+      </motion.div>
+    )
   }
 
   if (loading) {
@@ -501,44 +477,9 @@ export default function StudentDashboard() {
           )}
         </AnimatePresence>
 
-        <AnimatePresence>
-        {(String(aiRecommendations).length > 5) && (
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -20 }}
-            transition={{ duration: 0.5 }}
-          >
-            <Card className="bg-gradient-to-r from-blue-50 to-indigo-50 border-blue-200 shadow-lg">
-              <CardHeader>
-                <CardTitle className="flex items-center space-x-2">
-                  <Brain className="h-6 w-6 text-blue-600" />
-                  <span className="text-blue-800">AI Recommendation</span>
-                </CardTitle>
-                <CardDescription>
-                  Here's what I found for your query: "{searchQuery}"
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <motion.div
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  transition={{ delay: 0.2, duration: 0.5 }}
-                  className="bg-white/80 backdrop-blur-sm rounded-lg p-6 border border-white/50"
-                >
-                  <div className="prose prose-sm max-w-none">
-                    {(String(aiRecommendations).length > 15) ? parseReviewContent(String(aiRecommendations)) : "Waiting For User Input !"}
-                  </div>
-                </motion.div>
-              </CardContent>
-            </Card>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-        {/* AI Search */}
+        {/* AI Search Card */}
         <motion.div variants={itemVariants}>
-          <Card className="mb-8 bg-white/70 backdrop-blur-md border-white/20 shadow-lg">
+          <Card className="mb-6 bg-white/70 backdrop-blur-md border-white/20 shadow-lg">
             <CardHeader>
               <CardTitle className="flex items-center space-x-2">
                 <motion.div
@@ -583,6 +524,53 @@ export default function StudentDashboard() {
             </CardContent>
           </Card>
         </motion.div>
+
+        {/* NEW: AI Response Rendered Below Search */}
+        <AnimatePresence>
+          {aiResponseData && (
+            <motion.div
+              initial={{ opacity: 0, y: -20, height: 0 }}
+              animate={{ opacity: 1, y: 0, height: "auto" }}
+              exit={{ opacity: 0, y: -20, height: 0 }}
+              transition={{ duration: 0.4 }}
+              className="mb-8"
+            >
+              <Card className="bg-gradient-to-r from-blue-50 to-indigo-50 border-blue-200 shadow-lg overflow-hidden">
+                <CardHeader>
+                  <CardTitle className="flex items-center space-x-2">
+                    <Brain className="h-6 w-6 text-blue-600" />
+                    <span className="text-blue-800">AI Recommendation</span>
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    transition={{ delay: 0.2 }}
+                    className="bg-white/80 backdrop-blur-sm rounded-lg p-6 border border-white/50 text-gray-700 leading-relaxed shadow-sm"
+                  >
+                    {aiResponseData.description}
+                  </motion.div>
+
+                  {/* Render Event Cards if AI returned matching titles */}
+                  {aiResponseData.events && aiResponseData.events.length > 0 && (
+                    <motion.div 
+                      className="mt-6"
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      transition={{ delay: 0.4 }}
+                    >
+                      <h3 className="text-lg font-semibold text-gray-800 mb-4 px-1">Recommended Events:</h3>
+                      <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+                        {aiResponseData.events.map((event, index) => renderEventCard(event, index))}
+                      </div>
+                    </motion.div>
+                  )}
+                </CardContent>
+              </Card>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {/* Dashboard Tabs */}
         <motion.div variants={itemVariants}>
@@ -634,109 +622,7 @@ export default function StudentDashboard() {
                 initial="hidden"
                 animate="visible"
               >
-                {events.map((event, index) => {
-                  const cardStyle = getEventCardStyle(event.type)
-                  const isEnrolled = enrollmentStatuses[event.id] || false
-                  const isBookmarked = bookmarkedEvents.some(e => e.id === event.id)
-                  
-                  return (
-                    <motion.div key={index} variants={cardVariants} whileHover="hover" custom={index}>
-                      <Card
-                        className={`${cardStyle.gradient} ${cardStyle.border} ${cardStyle.shadow} ${cardStyle.hoverShadow} hover:shadow-xl transition-all duration-300 border-2 cursor-pointer group`}
-                      >
-                        <CardHeader className="relative">
-                          <div className="flex justify-between items-start">
-                            <CardTitle className="text-lg text-gray-900 group-hover:text-gray-800 transition-colors">
-                              {event.title}
-                            </CardTitle>
-                            <motion.div
-                              whileHover={{ scale: 1.1 }}
-                              className={`px-3 py-1 rounded-full text-white text-xs font-medium ${cardStyle.badgeGradient} shadow-lg`}
-                            >
-                              {event.type}
-                            </motion.div>
-                          </div>
-                          <CardDescription className="text-gray-600">{event.description}</CardDescription>
-                          <motion.div
-                            className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 transition-opacity duration-300"
-                            whileHover={{ scale: 1.2, rotate: 45 }}
-                          >
-                            <ArrowRight className="h-4 w-4 text-gray-400" />
-                          </motion.div>
-                        </CardHeader>
-                        <CardContent>
-                          <div className="space-y-3 text-sm text-gray-700 mb-4">
-                            <motion.div
-                              className="flex items-center"
-                              whileHover={{ x: 5 }}
-                              transition={{ duration: 0.2 }}
-                            >
-                              <div className="p-1 bg-white/60 rounded-md mr-3">
-                                <Clock className="h-4 w-4 text-gray-600" />
-                              </div>
-                              <span className="font-medium">
-                                {formatDate(event.date)} at {event.time}
-                              </span>
-                            </motion.div>
-                            <motion.div
-                              className="flex items-center"
-                              whileHover={{ x: 5 }}
-                              transition={{ duration: 0.2 }}
-                            >
-                              <div className="p-1 bg-white/60 rounded-md mr-3">
-                                <MapPin className="h-4 w-4 text-gray-600" />
-                              </div>
-                              <span className="font-medium">{event.venue}</span>
-                            </motion.div>
-                          </div>
-                          {event.tags && (
-                            <div className="flex flex-wrap gap-2 mb-4">
-                              {String(event.tags).split(',').map((tag, idx) => (
-                                <motion.div
-                                  key={idx}
-                                  whileHover={{ scale: 1.05 }}
-                                  className="px-2 py-1 bg-white/70 text-gray-700 text-xs rounded-full border border-gray-200 font-medium"
-                                >
-                                  {tag.trim()}
-                                </motion.div>
-                              ))}
-                            </div>
-                          )}
-                          <div className="flex space-x-2">
-                            <motion.div className="flex-1" whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
-                              <Button
-                                onClick={() => handleRegister(event.id)}
-                                disabled={isEnrolled}
-                                className={`w-full ${
-                                  isEnrolled
-                                    ? "bg-gradient-to-r from-gray-400 to-gray-500"
-                                    : cardStyle.buttonGradient
-                                } text-white font-medium transition-all duration-300`}
-                              >
-                                {isEnrolled ? "Registered" : "Register"}
-                                {!isEnrolled && <ArrowRight className="ml-2 h-4 w-4" />}
-                              </Button>
-                            </motion.div>
-                            <motion.div whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }}>
-                              <Button
-                                onClick={() => handleBookmark(event.id)}
-                                variant="outline"
-                                size="sm"
-                                className="border-gray-300 hover:bg-yellow-50 hover:border-yellow-300"
-                              >
-                                <Bookmark
-                                  className={`h-4 w-4 ${
-                                    isBookmarked ? "fill-yellow-400 text-yellow-400" : "text-gray-400"
-                                  }`}
-                                />
-                              </Button>
-                            </motion.div>
-                          </div>
-                        </CardContent>
-                      </Card>
-                    </motion.div>
-                  )
-                })}
+                {events.map((event, index) => renderEventCard(event, index))}
               </motion.div>
             </TabsContent>
 
@@ -759,10 +645,7 @@ export default function StudentDashboard() {
                   >
                     <Card className="bg-gradient-to-br from-gray-50 to-slate-100 border-gray-200">
                       <CardContent className="text-center py-12">
-                        <motion.div
-                          animate={{ y: [0, -10, 0] }}
-                          transition={{ duration: 2, repeat: Infinity }}
-                        >
+                        <motion.div animate={{ y: [0, -10, 0] }} transition={{ duration: 2, repeat: Infinity }}>
                           <Calendar className="h-12 w-12 text-gray-400 mx-auto mb-4" />
                         </motion.div>
                         <p className="text-gray-500 font-medium">No registered events yet</p>
@@ -781,9 +664,7 @@ export default function StudentDashboard() {
                       const cardStyle = getEventCardStyle(event.type)
                       return (
                         <motion.div key={event.id} variants={cardVariants} whileHover="hover" custom={index}>
-                          <Card
-                            className={`${cardStyle.gradient} ${cardStyle.border} ${cardStyle.shadow} hover:shadow-xl transition-all duration-300 border-2`}
-                          >
+                          <Card className={`${cardStyle.gradient} ${cardStyle.border} ${cardStyle.shadow} hover:shadow-xl transition-all duration-300 border-2`}>
                             <CardHeader>
                               <CardTitle className="text-lg text-gray-900">{event.title}</CardTitle>
                               <CardDescription className="text-gray-600">{event.description}</CardDescription>
@@ -840,10 +721,7 @@ export default function StudentDashboard() {
                   >
                     <Card className="bg-gradient-to-br from-yellow-50 to-orange-50 border-yellow-200">
                       <CardContent className="text-center py-12">
-                        <motion.div
-                          animate={{ scale: [1, 1.1, 1] }}
-                          transition={{ duration: 2, repeat: Number.POSITIVE_INFINITY }}
-                        >
+                        <motion.div animate={{ scale: [1, 1.1, 1] }} transition={{ duration: 2, repeat: Number.POSITIVE_INFINITY }}>
                           <Bookmark className="h-12 w-12 text-yellow-400 mx-auto mb-4" />
                         </motion.div>
                         <p className="text-gray-500 font-medium">No bookmarked events yet</p>
@@ -862,9 +740,7 @@ export default function StudentDashboard() {
                       const cardStyle = getEventCardStyle(event.type)
                       return (
                         <motion.div key={event.id} variants={cardVariants} whileHover="hover" custom={index}>
-                          <Card
-                            className={`${cardStyle.gradient} ${cardStyle.border} ${cardStyle.shadow} hover:shadow-xl transition-all duration-300 border-2`}
-                          >
+                          <Card className={`${cardStyle.gradient} ${cardStyle.border} ${cardStyle.shadow} hover:shadow-xl transition-all duration-300 border-2`}>
                             <CardHeader>
                               <CardTitle className="text-lg text-gray-900">{event.title}</CardTitle>
                               <CardDescription className="text-gray-600">{event.description}</CardDescription>
@@ -918,10 +794,7 @@ export default function StudentDashboard() {
               >
                 <Card className="bg-gradient-to-br from-blue-50 to-indigo-100 border-blue-200">
                   <CardContent className="text-center py-12">
-                    <motion.div
-                      animate={{ rotate: [0, 360] }}
-                      transition={{ duration: 20, repeat: Number.POSITIVE_INFINITY, ease: "linear" }}
-                    >
+                    <motion.div animate={{ rotate: [0, 360] }} transition={{ duration: 20, repeat: Number.POSITIVE_INFINITY, ease: "linear" }}>
                       <Calendar className="h-16 w-16 text-blue-400 mx-auto mb-4" />
                     </motion.div>
                     <p className="text-lg font-medium text-gray-700 mb-2">Calendar Integration Coming Soon</p>
