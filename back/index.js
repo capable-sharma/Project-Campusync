@@ -40,21 +40,19 @@ app.use(cors());
 app.use(express.json());
 
 // JWT Secret
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
+const JWT_SECRET = process.env.JWT_SECRET || 'saksham@sharma';
 
 // Auth Middleware
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
-  console.log(req.headers)
   const token = authHeader && authHeader.split(' ')[1];
-  console.log(token)
-  console.log(token)
   if (!token) {
     return res.status(401).json({ error: 'Access token required' });
   }
 
   jwt.verify(token, JWT_SECRET, (err, user) => {
     if (err) {
+      console.log(err.message)
       return res.status(403).json({ error: 'Invalid or expired token' });
     }
     req.user = user;
@@ -350,9 +348,8 @@ app.post('/api/ai/chat', authenticateToken, async (req, res) => {
     
     if (result.success) {
       res.json({
-        response: result.response,
-        relevantEvents: result.relevantEvents,
-        contextType: result.contextType
+        success : result.success,
+        response: result.response
       });
     } else {
       res.status(500).json({
