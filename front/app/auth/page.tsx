@@ -12,7 +12,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 
-const API_BASE_URL = 'http://localhost:3001/api'
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL+"/api" ||'http://localhost:3001/api'
 
 export default function AuthPage() {
   const [isLogin, setIsLogin] = useState(true)

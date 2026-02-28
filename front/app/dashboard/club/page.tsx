@@ -15,7 +15,7 @@ import { Calendar, Plus, Edit, Trash2, Users, Clock, MapPin, Bell, User, LogOut,
 import { Alert, AlertDescription } from "@/components/ui/alert"
 
 // API configuration
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api'
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL + "/api" || 'http://localhost:3001/api'
 
 // API utility functions
 const apiRequest = async (endpoint, options = {}) => {
