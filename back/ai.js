@@ -3,7 +3,7 @@ const { getUserRegisteredEvents, getApprovedEvents, saveChatMessage } = require(
 
 // Initialize Gemini AI
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash-lite' });
 
 // Helper function to format events for AI context
 const formatEventsForAI = (events) => {
@@ -36,6 +36,29 @@ const filterEventsByTags = (events, tags) => {
       searchTags.some(searchTag => tag.toLowerCase().includes(searchTag))
     )
   );
+};
+
+// --- NEW PARSER FUNCTION ---
+// Robust parser to ensure we always get the expected object structure
+const parseAIResponse = (responseText) => {
+  try {
+    // Strip markdown code blocks just in case the model ignores the mimeType
+    const cleanJsonString = responseText.replace(/```json/g, '').replace(/```/g, '').trim();
+    const parsed = JSON.parse(cleanJsonString);
+    
+    // Ensure we always return the expected structure even if the AI misses a field
+    return {
+      description: parsed.description || "I couldn't generate a proper description.",
+      events: Array.isArray(parsed.events) ? parsed.events : []
+    };
+  } catch (error) {
+    console.error("Failed to parse AI response as JSON:", error);
+    // Safe fallback if parsing completely fails
+    return {
+      description: "I'm having trouble formatting my response right now, but I'm here to help!",
+      events: []
+    };
+  }
 };
 
 // Main AI processing function
@@ -101,11 +124,10 @@ const processAIQuery = async (userId, userPrompt) => {
     // Format events for AI context
     const formattedEvents = formatEventsForAI(relevantEvents);
 
-    // Create context-aware prompt
+    // --- UPDATED SYSTEM PROMPT ---
     let systemPrompt = `You are Campusync AI, a helpful assistant for college students. You help students with information about college events, academics, and campus life.
 
 Context Information:
-- User is asking: "${userPrompt}"
 - Context type: ${contextType}
 - Available events: ${formattedEvents.length} events
 
@@ -113,46 +135,48 @@ Events data:
 ${JSON.stringify(formattedEvents, null, 2)}
 
 Instructions:
-1. Provide a helpful, friendly response to the user's query
-2. If the user asks about events, include relevant event details from the provided data
-3. Format event information clearly with titles, dates, times, venues, and descriptions
-4. If no relevant events are found, politely inform the user
-5. Keep responses concise but informative
-6. Be encouraging and supportive
-7. If the user asks about enrollment or registration, remind them they can enroll through the app
-8. Use a conversational, student-friendly tone`;
+1. You MUST respond ONLY with a raw, valid JSON object. Do not use markdown formatting.
+2. The JSON object must contain exactly two properties: "description" and "events".
+3. "description": A single, helpful, and friendly paragraph answering the user's query. Keep it concise, conversational, and student-friendly. Mention enrollment if applicable. If no events are found, politely inform them here.
+4. "events": An array of strings containing ONLY the exact titles of the events you are referencing from the provided data. If no events are relevant, leave the array empty [].`;
 
-    // Generate AI response
+    // --- GENERATION CALL ---
+    // (Using standard call assuming you went with Option 2, or keep your generationConfig if you updated the SDK)
     const result = await model.generateContent([
       { text: systemPrompt },
       { text: `User Query: ${userPrompt}` }
     ]);
 
-    const aiResponse = result.response.text();
+    const aiResponseText = result.response.text();
+    
+    // Parse the JSON string into an object
+    const parsedData = parseAIResponse(aiResponseText);
 
-    // Save chat message to database
-    await saveChatMessage(userId, userPrompt, aiResponse);
-    console.log(aiResponse);
+    // Save chat message to database using just the description string
+    await saveChatMessage(userId, userPrompt, parsedData.description);
+    
+    // --- UPDATED SUCCESS RETURN ---
     return {
       success: true,
-      response: aiResponse,
-      relevantEvents: formattedEvents,
-      contextType
+      response: parsedData  // This will map exactly to your { description: "...", events: [...] }
     };
 
   } catch (error) {
     console.error('AI Processing Error:', error);
     
-    // Fallback response
-    const fallbackResponse = "I'm sorry, I encountered an error while processing your request. Please try again or contact support if the problem persists.";
+    // Fallback response matching the expected JSON structure
+    const fallbackResponse = {
+        description: "I'm sorry, I encountered an error while processing your request. Please try again.",
+        events: []
+    };
     
-    // Still try to save the chat message
     try {
-      await saveChatMessage(userId, userPrompt, fallbackResponse);
+      await saveChatMessage(userId, userPrompt, fallbackResponse.description);
     } catch (saveError) {
       console.error('Error saving fallback message:', saveError);
     }
 
+    // --- UPDATED ERROR RETURN ---
     return {
       success: false,
       response: fallbackResponse,
